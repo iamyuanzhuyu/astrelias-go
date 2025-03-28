@@ -1,0 +1,176 @@
+
+1. 用户表(users)
+SQL
+CREATE TABLE users (
+    id BIGSERIAL PRIMARY KEY,
+    logto_id VARCHAR(36) NOT NULL UNIQUE,      -- Logto用户唯一标识
+    cached_username VARCHAR(50),               -- 缓存用户名
+    cached_avatar_url TEXT,                    -- 缓存头像URL
+    settings JSONB DEFAULT '{}'::JSONB,        -- 用户设置
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+
+CREATE INDEX idx_users_logto_id ON users(logto_id);
+2. 活动表(activities)
+SQL
+CREATE TABLE activities (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES users(id),
+    title VARCHAR(100) NOT NULL,
+    description TEXT,
+    
+    -- 运动数据
+    activity_type VARCHAR(20) NOT NULL,        -- hiking/running/cycling等
+    distance_meters FLOAT,                     -- 总距离(米)
+    duration_seconds INT,                      -- 持续时间(秒)
+    difficulty SMALLINT CHECK (difficulty BETWEEN 1 AND 5), -- 1-5星难度
+    elevation_gain FLOAT,                      -- 累计爬升高度(米)
+    
+    -- 时间信息
+    start_time TIMESTAMPTZ,
+    end_time TIMESTAMPTZ,
+    
+    -- 地理信息
+    bounds GEOGRAPHY(POLYGON, 4326),           -- 轨迹包围盒
+    start_point GEOGRAPHY(POINT, 4326),        -- 起点坐标
+    
+    -- 多平台支持
+    source VARCHAR(20) NOT NULL,               -- strava/2bulu/alltrails等
+    source_id VARCHAR(50),                     -- 第三方平台ID
+    file_type VARCHAR(10),                     -- gpx/kml/geojson
+    
+    -- 扩展数据
+    weather JSONB,                             -- 天气数据
+    conditions VARCHAR(100),                   -- 环境描述
+    popularity INTEGER,                        -- 热门度评分
+    device_info JSONB,                         -- 设备信息
+    
+    is_public BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 空间索引
+CREATE INDEX idx_activities_bbox ON activities USING GIST(bounds);
+CREATE INDEX idx_activities_start_point ON activities USING GIST(start_point);
+CREATE INDEX idx_activities_user ON activities(user_id);
+3. 轨迹点表(track_points)
+SQL
+CREATE TABLE track_points (
+    id BIGSERIAL PRIMARY KEY,
+    activity_id BIGINT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    segment_id INTEGER DEFAULT 0,              -- 分段ID
+    point_index INTEGER NOT NULL,              -- 点顺序
+    
+    -- 空间数据
+    coordinate GEOGRAPHY(POINT, 4326) NOT NULL,-- 经纬度
+    elevation FLOAT,                           -- 海拔(米)
+    
+    -- 运动数据
+    timestamp TIMESTAMPTZ,
+    speed FLOAT,                               -- 速度(米/秒)
+    accuracy FLOAT,                            -- GPS精度(米)
+    heart_rate INTEGER,                        -- 心率(Strava)
+    cadence INTEGER,                           -- 步频/踏频
+    
+    -- 平台特有数据
+    platform_meta JSONB,                       -- 各平台扩展数据
+    
+    CONSTRAINT uniq_activity_point UNIQUE(activity_id, segment_id, point_index)
+);
+
+-- 空间索引
+CREATE INDEX idx_track_points_coordinate ON track_points USING GIST(coordinate);
+CREATE INDEX idx_track_points_activity ON track_points(activity_id);
+4. 标注点表(waypoints)
+SQL
+CREATE TYPE waypoint_category AS ENUM (
+    'scenic',       -- 观景点
+    'water',        -- 水源
+    'hazard',       -- 危险区域
+    'trailhead',    -- 起点/终点
+    'facility',     -- 设施
+    'custom'        -- 用户自定义
+);
+
+CREATE TABLE waypoints (
+    id BIGSERIAL PRIMARY KEY,
+    activity_id BIGINT NOT NULL REFERENCES activities(id) ON DELETE CASCADE,
+    user_id BIGINT REFERENCES users(id),       -- 创建用户(平台标注可为NULL)
+    
+    -- 地理信息
+    coordinate GEOGRAPHY(POINT, 4326) NOT NULL,
+    elevation FLOAT,
+    
+    -- 标注信息
+    name VARCHAR(100),
+    description TEXT,
+    category waypoint_category,
+    icon_type VARCHAR(20),                     -- 图标类型
+    
+    -- 优先级控制
+    priority SMALLINT DEFAULT 0,               -- 0=平台,1=用户普通,2=紧急
+    original_id BIGINT,                        -- 原始标注ID(如果是修改)
+    
+    -- 媒体资源
+    media_urls TEXT[] DEFAULT '{}',
+    
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 空间索引
+CREATE INDEX idx_waypoints_coordinate ON waypoints USING GIST(coordinate);
+5. 难度等级使用说明
+难度定义标准：
+
+⭐ (1星): 简单，适合初学者，平坦地形
+⭐⭐ (2星): 简单-中等，少量爬升
+⭐⭐⭐ (3星): 中等，有明显爬升，需要一定体力
+⭐⭐⭐⭐ (4星): 困难，长距离/大爬升，需要经验
+⭐⭐⭐⭐⭐ (5星): 专家级，技术性地形，需要专业装备
+前端显示建议：
+
+JAVASCRIPT
+// 转换为星级显示
+const renderDifficulty = (level) => {
+  return '⭐'.repeat(level) + '☆'.repeat(5-level);
+}
+// 示例：level=3 → "⭐⭐⭐☆☆"
+与其他系统难度映射：
+SQL
+-- AllTrails难度转换示例
+UPDATE activities 
+SET difficulty = CASE 
+  WHEN raw_metadata->>'difficulty' = 'easy' THEN 1
+  WHEN raw_metadata->>'difficulty' = 'moderate' THEN 3
+  WHEN raw_metadata->>'difficulty' = 'hard' THEN 4
+  ELSE 2
+END
+WHERE source = 'alltrails';
+6. 数据库优化建议
+分区策略：
+SQL
+-- 按时间范围分区(PostgreSQL 10+)
+CREATE TABLE track_points_2023 PARTITION OF track_points
+FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
+视图支持：
+SQL
+-- 创建难度统计视图
+CREATE VIEW difficulty_stats AS
+SELECT 
+  difficulty,
+  COUNT(*) as count,
+  AVG(distance_meters) as avg_distance,
+  AVG(duration_seconds/60) as avg_minutes
+FROM activities
+GROUP BY difficulty;
+这个设计保留了之前讨论中的所有关键功能，同时：
+
+使用1-5星直观表示难度
+优化了空间数据存储和查询性能
+支持多平台数据导入
+提供灵活的标注点管理系统
+为离线同步做好准备
+需要针对特定场景进一步调整吗？
