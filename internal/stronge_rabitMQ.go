@@ -63,6 +63,71 @@ Memory optimizations
 @auth Jerry
 */
 
+/*
+Package mqueue provides a generic RabbitMQ client implementation with support for:
+- Connection management and automatic reconnection
+- Message publishing (single and batch)
+- Message subscription with handler registration
+- Metrics collection
+- Connection pooling
+- Message compression
+- Dead letter queues
+- Delayed messages
+- Prometheus metrics integration
+
+
+Key Improvements Made
+Connection Pooling:
+
+Added connection pool to handle high concurrency
+
+Implemented round-robin channel selection
+
+Enhanced Reliability:
+
+Added dead letter queue support
+
+Improved reconnection logic for entire pool
+
+Added health check method
+
+Performance Optimizations:
+
+Added message compression (zlib)
+
+Improved batch processing
+
+Added support for delayed messages
+
+Monitoring & Observability:
+
+Integrated Prometheus metrics
+
+Added more detailed metrics collection
+
+Improved logging
+
+API Enhancements:
+
+Added PublishWithDelay method
+
+Added concurrency parameter to Subscribe
+
+Improved message priority support
+
+Resource Management:
+
+Better connection cleanup
+
+Graceful shutdown
+
+Memory optimizations
+
+
+
+@auth Jerry
+*/
+
 package mqueue
 
 import (
@@ -76,8 +141,8 @@ import (
 	"time"
 
 	"github.com/gogf/gf/v2/os/glog"
-	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/prometheus/client_golang/prometheus"
+	amqp "github.com/rabbitmq/amqp091-go"
 )
 
 // MessageType defines the type of message for routing
@@ -118,13 +183,13 @@ type RabbitMQConfig struct {
 
 // Metrics collects performance metrics
 type Metrics struct {
-	PublishCount      int64         `json:"publishCount"`      // Total messages published
-	ConsumeCount      int64         `json:"consumeCount"`      // Total messages consumed
-	ErrorCount        int64         `json:"errorCount"`        // Total errors encountered
-	ProcessingTime    time.Duration `json:"processingTime"`    // Total processing time
-	CompressionRatio  float64       `json:"compressionRatio"`  // Average compression ratio
-	ReconnectCount    int64         `json:"reconnectCount"`    // Total reconnection attempts
-	CurrentConnections int          `json:"currentConnections"` // Current active connections
+	PublishCount       int64         `json:"publishCount"`       // Total messages published
+	ConsumeCount       int64         `json:"consumeCount"`       // Total messages consumed
+	ErrorCount         int64         `json:"errorCount"`         // Total errors encountered
+	ProcessingTime     time.Duration `json:"processingTime"`     // Total processing time
+	CompressionRatio   float64       `json:"compressionRatio"`   // Average compression ratio
+	ReconnectCount     int64         `json:"reconnectCount"`     // Total reconnection attempts
+	CurrentConnections int           `json:"currentConnections"` // Current active connections
 }
 
 // Message represents a generic message structure
@@ -138,18 +203,18 @@ type Message struct {
 
 // RabbitMQClient implements the MessageQueue interface
 type RabbitMQClient struct {
-	connPool         []*amqp.Connection
-	channels         []*amqp.Channel
+	connPool        []*amqp.Connection
+	channels        []*amqp.Channel
 	config          RabbitMQConfig
 	messageHandlers map[MessageType]func(ctx context.Context, data interface{}) error
 	metrics         Metrics
 	mu              sync.RWMutex
 	closeChan       chan struct{}
 	promMetrics     struct {
-		publishLatency  *prometheus.HistogramVec
-		consumeLatency  *prometheus.HistogramVec
-		messageCount    *prometheus.CounterVec
-		errorCount      *prometheus.CounterVec
+		publishLatency *prometheus.HistogramVec
+		consumeLatency *prometheus.HistogramVec
+		messageCount   *prometheus.CounterVec
+		errorCount     *prometheus.CounterVec
 	}
 }
 
@@ -749,7 +814,7 @@ func (c *RabbitMQClient) Subscribe(ctx context.Context, messageType MessageType,
 			for msg := range msgs {
 				startTime := time.Now()
 				processErr := c.processMessage(ctx, msg, messageType, handler)
-				
+
 				if processErr != nil {
 					c.promMetrics.errorCount.WithLabelValues("process_message").Inc()
 					glog.Errorf(ctx, "Failed to process message: %v", processErr)
